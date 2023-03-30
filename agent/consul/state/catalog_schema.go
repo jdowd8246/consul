@@ -608,8 +608,9 @@ func (q NodeCheckQuery) PartitionOrDefault() string {
 // ServiceVirtualIP is used to store a virtual IP associated with a service.
 // It is also used to store assigned virtual IPs when a snapshot is created.
 type ServiceVirtualIP struct {
-	Service structs.PeeredServiceName
-	IP      net.IP
+	Service   structs.PeeredServiceName
+	IP        net.IP
+	ManualIPs []string
 
 	structs.RaftIndex
 }

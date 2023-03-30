@@ -1090,6 +1090,33 @@ func assignServiceVirtualIP(tx WriteTxn, idx uint64, psn structs.PeeredServiceNa
 	return result.String(), nil
 }
 
+func (s *Store) AssignManualVirtualIPs(idx uint64, psn structs.PeeredServiceName, ips []string) error {
+	tx := s.db.WriteTxn(idx)
+	defer tx.Abort()
+
+	entry, err := tx.First(tableServiceVirtualIPs, indexID, psn)
+	if err != nil {
+		return fmt.Errorf("failed service virtual IP lookup: %s", err)
+	}
+
+	if entry == nil {
+		return nil
+	}
+
+	newEntry := entry.(ServiceVirtualIP)
+	newEntry.ManualIPs = ips
+	newEntry.ModifyIndex = idx
+
+	if err := tx.Insert(tableServiceVirtualIPs, newEntry); err != nil {
+		return fmt.Errorf("failed inserting service virtual IP entry: %s", err)
+	}
+	if err := updateVirtualIPMaxIndexes(tx, idx, psn.ServiceName.PartitionOrDefault(), psn.Peer); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func updateVirtualIPMaxIndexes(txn WriteTxn, idx uint64, partition, peerName string) error {
 	// update per-partition max index
 	if err := indexUpdateMaxTxn(txn, idx, partitionedIndexEntryName(tableServiceVirtualIPs, partition)); err != nil {
@@ -2974,6 +3001,22 @@ func (s *Store) VirtualIPForService(psn structs.PeeredServiceName) (string, erro
 		return "", err
 	}
 	return result.String(), nil
+}
+
+func (s *Store) ServiceManualVIPs(psn structs.PeeredServiceName) (*ServiceVirtualIP, error) {
+	tx := s.db.Txn(false)
+	defer tx.Abort()
+
+	vip, err := tx.First(tableServiceVirtualIPs, indexID, psn)
+	if err != nil {
+		return nil, fmt.Errorf("failed service virtual IP lookup: %s", err)
+	}
+	if vip == nil {
+		return nil, nil
+	}
+
+	entry := vip.(ServiceVirtualIP)
+	return &entry, nil
 }
 
 // VirtualIPsForAllImportedServices returns a slice of ServiceVirtualIP for all
