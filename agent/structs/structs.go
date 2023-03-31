@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -3054,4 +3057,11 @@ func (l *Locality) ToAPI() *api.Locality {
 		Region: l.Region,
 		Zone:   l.Zone,
 	}
+}
+
+func (l *Locality) GetRegion() string {
+	if l == nil {
+		return ""
+	}
+	return l.Region
 }

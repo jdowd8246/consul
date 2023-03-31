@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package fsm
 
 import (
@@ -518,6 +521,16 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 		},
 	}))
 
+	// Add a service-resolver entry to get a virtual IP for service foo
+	resolverEntry := &structs.ServiceResolverConfigEntry{
+		Kind: structs.ServiceResolver,
+		Name: "foo",
+	}
+	require.NoError(t, fsm.state.EnsureConfigEntry(34, resolverEntry))
+	vip, err = fsm.state.VirtualIPForService(structs.PeeredServiceName{ServiceName: structs.NewServiceName("foo", nil)})
+	require.NoError(t, err)
+	require.Equal(t, vip, "240.0.0.3")
+
 	// Snapshot
 	snap, err := fsm.Snapshot()
 	require.NoError(t, err)
@@ -621,6 +634,10 @@ func TestFSM_SnapshotRestore_OSS(t *testing.T) {
 	vip, err = fsm2.state.VirtualIPForService(psn)
 	require.NoError(t, err)
 	require.Equal(t, vip, "240.0.0.2")
+	psn = structs.PeeredServiceName{ServiceName: structs.NewServiceName("foo", nil)}
+	vip, err = fsm2.state.VirtualIPForService(psn)
+	require.NoError(t, err)
+	require.Equal(t, vip, "240.0.0.3")
 
 	// Verify key is set
 	_, d, err := fsm2.state.KVSGet(nil, "/test", nil)

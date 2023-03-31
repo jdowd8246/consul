@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
@@ -185,7 +188,7 @@ func TestAgent_Services_ExternalConnectProxy(t *testing.T) {
 		Port:    5000,
 		Proxy: structs.ConnectProxyConfig{
 			DestinationServiceName: "db",
-			Upstreams:              structs.TestUpstreams(t),
+			Upstreams:              structs.TestUpstreams(t, false),
 		},
 	}
 	a.State.AddServiceWithChecks(srv1, nil, "", false)
@@ -225,7 +228,7 @@ func TestAgent_Services_Sidecar(t *testing.T) {
 		LocallyRegisteredAsSidecar: true,
 		Proxy: structs.ConnectProxyConfig{
 			DestinationServiceName: "db",
-			Upstreams:              structs.TestUpstreams(t),
+			Upstreams:              structs.TestUpstreams(t, false),
 			Mode:                   structs.ProxyModeTransparent,
 			TransparentProxy: structs.TransparentProxyConfig{
 				OutboundListenerPort: 10101,

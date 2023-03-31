@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package state
 
 import (
@@ -2014,6 +2017,33 @@ func freeServiceVirtualIP(
 	}
 	if !supported {
 		return nil
+	}
+
+	// Don't deregister the virtual IP if at least one instance of this service still exists.
+	q := Query{
+		Value:          psn.ServiceName.Name,
+		EnterpriseMeta: psn.ServiceName.EnterpriseMeta,
+		PeerName:       psn.Peer,
+	}
+	if remainingService, err := tx.First(tableServices, indexService, q); err == nil {
+		if remainingService != nil {
+			return nil
+		}
+	} else {
+		return fmt.Errorf("failed service lookup for %q: %s", psn.ServiceName.Name, err)
+	}
+
+	// Don't deregister the virtual IP if at least one resolver/router/splitter config entry still
+	// references this service.
+	configEntryVIPKinds := []string{structs.ServiceResolver, structs.ServiceRouter, structs.ServiceSplitter}
+	for _, kind := range configEntryVIPKinds {
+		_, entry, err := configEntryTxn(tx, nil, kind, psn.ServiceName.Name, &psn.ServiceName.EnterpriseMeta)
+		if err != nil {
+			return fmt.Errorf("failed config entry lookup for %s/%s: %s", kind, psn.ServiceName.Name, err)
+		}
+		if entry != nil {
+			return nil
+		}
 	}
 
 	// Don't deregister the virtual IP if at least one terminating gateway still references this service.

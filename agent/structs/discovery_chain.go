@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -59,7 +62,7 @@ type CompiledDiscoveryChain struct {
 // ID returns an ID that encodes the service, namespace, partition, and datacenter.
 // This ID allows us to compare a discovery chain target to the chain upstream itself.
 func (c *CompiledDiscoveryChain) ID() string {
-	return chainID(DiscoveryTargetOpts{
+	return ChainID(DiscoveryTargetOpts{
 		Service:    c.ServiceName,
 		Namespace:  c.Namespace,
 		Partition:  c.Partition,
@@ -180,6 +183,7 @@ type DiscoverySplit struct {
 type DiscoveryFailover struct {
 	Targets []string                       `json:",omitempty"`
 	Policy  *ServiceResolverFailoverPolicy `json:",omitempty"`
+	Regions []string                       `json:",omitempty"`
 }
 
 // DiscoveryTarget represents all of the inputs necessary to use a resolver
@@ -314,10 +318,10 @@ func (t *DiscoveryTarget) ToDiscoveryTargetOpts() DiscoveryTargetOpts {
 	}
 }
 
-func chainID(opts DiscoveryTargetOpts) string {
+func ChainID(opts DiscoveryTargetOpts) string {
 	// NOTE: this format is similar to the SNI syntax for simplicity
 	if opts.Peer != "" {
-		return fmt.Sprintf("%s.%s.default.external.%s", opts.Service, opts.Namespace, opts.Peer)
+		return fmt.Sprintf("%s.%s.%s.external.%s", opts.Service, opts.Namespace, opts.Partition, opts.Peer)
 	}
 	if opts.ServiceSubset == "" {
 		return fmt.Sprintf("%s.%s.%s.%s", opts.Service, opts.Namespace, opts.Partition, opts.Datacenter)
@@ -326,7 +330,7 @@ func chainID(opts DiscoveryTargetOpts) string {
 }
 
 func (t *DiscoveryTarget) setID() {
-	t.ID = chainID(t.ToDiscoveryTargetOpts())
+	t.ID = ChainID(t.ToDiscoveryTargetOpts())
 }
 
 func (t *DiscoveryTarget) String() string {

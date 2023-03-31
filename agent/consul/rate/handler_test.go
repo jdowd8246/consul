@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package rate
 
 import (
@@ -419,4 +422,7 @@ func (m *mockLimiter) Allow(v multilimiter.LimitedEntity) bool { return m.Called
 func (m *mockLimiter) Run(ctx context.Context)                 { m.Called(ctx) }
 func (m *mockLimiter) UpdateConfig(cfg multilimiter.LimiterConfig, prefix []byte) {
 	m.Called(cfg, prefix)
+}
+func (m *mockLimiter) DeleteConfig(prefix []byte) {
+	m.Called(prefix)
 }
