@@ -2528,17 +2528,20 @@ func validateAutoConfigAuthorizer(rt RuntimeConfig) error {
 }
 
 func (b *builder) cloudConfigVal(v *CloudConfigRaw) (val hcpconfig.CloudConfig) {
+	val.ResourceID = os.Getenv("HCP_RESOURCE_ID")
 	if v == nil {
 		return val
 	}
 
-	val.ResourceID = stringVal(v.ResourceID)
 	val.ClientID = stringVal(v.ClientID)
 	val.ClientSecret = stringVal(v.ClientSecret)
 	val.AuthURL = stringVal(v.AuthURL)
 	val.Hostname = stringVal(v.Hostname)
 	val.ScadaAddress = stringVal(v.ScadaAddress)
 
+	if resourceID := stringVal(v.ResourceID); resourceID != "" {
+		val.ResourceID = resourceID
+	}
 	return val
 }
 
