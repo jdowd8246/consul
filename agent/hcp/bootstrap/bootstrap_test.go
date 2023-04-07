@@ -12,6 +12,9 @@ import (
 
 	"github.com/hashicorp/consul/agent/config"
 	"github.com/hashicorp/consul/agent/hcp"
+	"github.com/hashicorp/consul/lib"
+	"github.com/hashicorp/consul/tlsutil"
+	"github.com/hashicorp/go-uuid"
 	"github.com/mitchellh/cli"
 	"github.com/stretchr/testify/require"
 )
@@ -22,6 +25,7 @@ func TestBootstrapConfigLoader(t *testing.T) {
 			DefaultConfig: source,
 			HCL: []string{
 				`server = true`,
+				`bind_addr = "127.0.0.1"`,
 				`data_dir = "/tmp/consul-data"`,
 			},
 		})
@@ -128,6 +132,7 @@ func TestLoadConfig_Persistence(t *testing.T) {
 		baseOpts := config.LoadOpts{
 			HCL: []string{
 				`server = true`,
+				`bind_addr = "127.0.0.1"`,
 				fmt.Sprintf(`http_config = { response_headers = { %s = "Content-Encoding" } }`, accessControlHeaderName),
 				fmt.Sprintf(`cloud { client_id="test" client_secret="test" hostname=%q auth_url=%q resource_id=%q }`,
 					srv.Listener.Addr().String(), srv.URL, tc.resourceID),
@@ -178,8 +183,14 @@ func TestLoadConfig_Persistence(t *testing.T) {
 		loader, err = LoadConfig(context.Background(), client, initial.RuntimeConfig.DataDir, baseLoader, ui)
 		require.NoError(t, err)
 
+		fromDisk, err := loader(nil)
+		require.NoError(t, err)
+
 		// HCP-enabled cases should fetch from disk on the second run.
 		require.Contains(t, ui.OutputWriter.String(), "Loaded HCP configuration from local disk")
+
+		// Config loaded from disk should be the same as the one that was initially fetched from the HCP servers.
+		require.Equal(t, fromRemote.RuntimeConfig, fromDisk.RuntimeConfig)
 	}
 
 	tt := map[string]testCase{
@@ -224,13 +235,14 @@ func TestLoadConfig_Persistence(t *testing.T) {
 			verifyFn: func(t *testing.T, rc *config.RuntimeConfig) {
 				entries, err := os.ReadDir(filepath.Join(rc.DataDir, subDir))
 				require.NoError(t, err)
-				require.Len(t, entries, 4)
+				require.Len(t, entries, 5)
 
 				files := []string{
 					filepath.Join(rc.DataDir, subDir, configFileName),
 					filepath.Join(rc.DataDir, subDir, caFileName),
 					filepath.Join(rc.DataDir, subDir, certFileName),
 					filepath.Join(rc.DataDir, subDir, keyFileName),
+					filepath.Join(rc.DataDir, subDir, tokenFileName),
 				}
 				for _, name := range files {
 					_, err := os.Stat(name)
@@ -240,6 +252,194 @@ func TestLoadConfig_Persistence(t *testing.T) {
 				require.Equal(t, filepath.Join(rc.DataDir, subDir, certFileName), rc.TLS.HTTPS.CertFile)
 				require.Equal(t, filepath.Join(rc.DataDir, subDir, keyFileName), rc.TLS.HTTPS.KeyFile)
 				require.Equal(t, filepath.Join(rc.DataDir, subDir, caFileName), rc.TLS.HTTPS.CAFile)
+				require.NoError(t, validateCerts(filepath.Join(rc.DataDir, subDir)))
+			},
+		},
+		"existing cluster": {
+			resourceID: "organization/0b9de9a3-8403-4ca6-aba8-fca752f42100/" +
+				"project/0b9de9a3-8403-4ca6-aba8-fca752f42100/" +
+				"consul.cluster/" + TestExistingClusterID,
+
+			// Existing clusters should have only received and persisted the management token.
+			verifyFn: func(t *testing.T, rc *config.RuntimeConfig) {
+				entries, err := os.ReadDir(filepath.Join(rc.DataDir, subDir))
+				require.NoError(t, err)
+				require.Len(t, entries, 2)
+
+				files := []string{
+					filepath.Join(rc.DataDir, subDir, existingClusterFileName),
+					filepath.Join(rc.DataDir, subDir, tokenFileName),
+				}
+				for _, name := range files {
+					_, err := os.Stat(name)
+					require.NoError(t, err)
+				}
+			},
+		},
+	}
+
+	for name, tc := range tt {
+		t.Run(name, func(t *testing.T) {
+			run(t, tc)
+		})
+	}
+}
+
+func Test_loadPersistedBootstrapConfig(t *testing.T) {
+	type expect struct {
+		loaded  bool
+		warning string
+	}
+	type testCase struct {
+		existingCluster bool
+		mutateFn        func(t *testing.T, dataDir string)
+		expect          expect
+	}
+
+	run := func(t *testing.T, tc testCase) {
+		dataDir, err := os.MkdirTemp(os.TempDir(), "load-bootstrap-test-")
+		require.NoError(t, err)
+		t.Cleanup(func() { os.RemoveAll(dataDir) })
+
+		// Do some common setup as if we received config from HCP and persisted it to disk.
+		require.NoError(t, lib.EnsurePath(filepath.Join(dataDir, subDir), true))
+		if tc.existingCluster {
+			require.NoError(t, persistExistingClusterMarker(dataDir))
+
+		} else {
+			caCert, caKey, err := tlsutil.GenerateCA(tlsutil.CAOpts{})
+			require.NoError(t, err)
+
+			serverCert, serverKey, err := testLeaf(caCert, caKey)
+			require.NoError(t, err)
+			require.NoError(t, persistTLSCerts(dataDir, serverCert, serverKey, []string{caCert}))
+
+			cfgJSON := `{"bootstrap_expect": 8}`
+			require.NoError(t, persistBootstrapConfig(dataDir, cfgJSON))
+		}
+
+		token, err := uuid.GenerateUUID()
+		require.NoError(t, err)
+		require.NoError(t, persistManagementToken(dataDir, token))
+
+		// Optionally mutate the persisted data to trigger errors while loading.
+		if tc.mutateFn != nil {
+			tc.mutateFn(t, dataDir)
+		}
+
+		ui := cli.NewMockUi()
+		cfg, loaded := loadPersistedBootstrapConfig(dataDir, ui)
+		require.Equal(t, tc.expect.loaded, loaded, ui.ErrorWriter.String())
+		if loaded {
+			require.Equal(t, token, cfg.ManagementToken)
+			require.Empty(t, ui.ErrorWriter.String())
+
+		} else {
+			require.Nil(t, cfg)
+			require.Contains(t, ui.ErrorWriter.String(), tc.expect.warning)
+		}
+	}
+
+	tt := map[string]testCase{
+		"existing cluster with valid files": {
+			existingCluster: true,
+			// Don't mutate, files from setup are valid.
+			mutateFn: nil,
+			expect: expect{
+				loaded:  true,
+				warning: "",
+			},
+		},
+		"existing cluster some files": {
+			existingCluster: true,
+			mutateFn: func(t *testing.T, dataDir string) {
+				// Remove the token file while leaving the existing cluster marker.
+				require.NoError(t, os.Remove(filepath.Join(dataDir, subDir, tokenFileName)))
+			},
+			expect: expect{
+				loaded:  false,
+				warning: "configuration files on disk are incomplete",
+			},
+		},
+		"existing cluster no files": {
+			existingCluster: true,
+			mutateFn: func(t *testing.T, dataDir string) {
+				// Remove all files
+				require.NoError(t, os.RemoveAll(filepath.Join(dataDir, subDir)))
+			},
+			expect: expect{
+				loaded: false,
+				// No warnings since we assume we need to fetch config from HCP for the first time.
+				warning: "",
+			},
+		},
+		"new cluster with valid files": {
+			// Don't mutate, files from setup are valid.
+			mutateFn: nil,
+			expect: expect{
+				loaded:  true,
+				warning: "",
+			},
+		},
+		"new cluster some files": {
+			mutateFn: func(t *testing.T, dataDir string) {
+				// Remove one of the required files
+				require.NoError(t, os.Remove(filepath.Join(dataDir, subDir, certFileName)))
+			},
+			expect: expect{
+				loaded:  false,
+				warning: "configuration files on disk are incomplete",
+			},
+		},
+		"new cluster no files": {
+			mutateFn: func(t *testing.T, dataDir string) {
+				// Remove all files
+				require.NoError(t, os.RemoveAll(filepath.Join(dataDir, subDir)))
+			},
+			expect: expect{
+				loaded: false,
+				// No warnings since we assume we need to fetch config from HCP for the first time.
+				warning: "",
+			},
+		},
+		"new cluster invalid cert": {
+			mutateFn: func(t *testing.T, dataDir string) {
+				dir := filepath.Join(dataDir, subDir, certFileName)
+				require.NoError(t, os.WriteFile(dir, []byte("not-a-cert"), 0600))
+			},
+			expect: expect{
+				loaded:  false,
+				warning: "invalid server certificate",
+			},
+		},
+		"new cluster invalid CA": {
+			mutateFn: func(t *testing.T, dataDir string) {
+				dir := filepath.Join(dataDir, subDir, caFileName)
+				require.NoError(t, os.WriteFile(dir, []byte("not-a-ca-cert"), 0600))
+			},
+			expect: expect{
+				loaded:  false,
+				warning: "invalid CA certificate",
+			},
+		},
+		"new cluster invalid config flag": {
+			mutateFn: func(t *testing.T, dataDir string) {
+				dir := filepath.Join(dataDir, subDir, configFileName)
+				require.NoError(t, os.WriteFile(dir, []byte(`{"not_a_consul_agent_config_field" = "zap"}`), 0600))
+			},
+			expect: expect{
+				loaded:  false,
+				warning: "failed to parse local bootstrap config",
+			},
+		},
+		"existing cluster invalid token": {
+			existingCluster: true,
+			mutateFn: func(t *testing.T, dataDir string) {
+				require.NoError(t, persistManagementToken(dataDir, "not-a-uuid"))
+			},
+			expect: expect{
+				loaded:  false,
+				warning: "is not a valid UUID",
 			},
 		},
 	}

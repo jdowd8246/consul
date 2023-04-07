@@ -165,7 +165,8 @@ func (c *cmd) run(args []string) int {
 	// on the call to agent.NewBaseDeps so that the wrapped loader takes effect.
 	res, err := loader(nil)
 	if err != nil {
-		ui.Error("error loading agent config: " + err.Error())
+		ui.Error(err.Error())
+		return 1
 	}
 	if res.RuntimeConfig.IsCloudEnabled() {
 		client, err := hcp.NewClient(res.RuntimeConfig.Cloud)
