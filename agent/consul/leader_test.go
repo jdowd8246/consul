@@ -1261,29 +1261,55 @@ func TestLeader_ACL_Initialization(t *testing.T) {
 
 	tests := []struct {
 		name              string
-		build             string
 		initialManagement string
-		bootstrap         bool
+		hcpManagement     string
+
+		// canBootstrap tracks whether the ACL system can be bootstrapped
+		// after the leader initializes ACLs. Bootstrapping is the act
+		// of persisting a token with the Global Management policy.
+		canBootstrap bool
 	}{
-		{"old version, no initial management", "0.8.0", "", true},
-		{"old version, initial management", "0.8.0", "root", false},
-		{"new version, no initial management", "0.9.1", "", true},
-		{"new version, initial management", "0.9.1", "root", false},
+		{
+			name:              "bootstrap from initial management",
+			initialManagement: "c9ad785a-420d-470d-9b4d-6d9f084bfa87",
+			hcpManagement:     "",
+			canBootstrap:      false,
+		},
+		{
+			name:              "bootstrap from hcp management",
+			initialManagement: "",
+			hcpManagement:     "924bc0e1-a41b-4f3a-b5e8-0899502fc50e",
+			canBootstrap:      false,
+		},
+		{
+			name:              "bootstrap with both",
+			initialManagement: "c9ad785a-420d-470d-9b4d-6d9f084bfa87",
+			hcpManagement:     "924bc0e1-a41b-4f3a-b5e8-0899502fc50e",
+			canBootstrap:      false,
+		},
+		{
+			name:              "did not bootstrap",
+			initialManagement: "",
+			hcpManagement:     "",
+			canBootstrap:      true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			conf := func(c *Config) {
-				c.Build = tt.build
 				c.Bootstrap = true
 				c.Datacenter = "dc1"
 				c.PrimaryDatacenter = "dc1"
 				c.ACLsEnabled = true
 				c.ACLInitialManagementToken = tt.initialManagement
+				c.Cloud.ManagementToken = tt.hcpManagement
 			}
-			dir1, s1 := testServerWithConfig(t, conf)
-			defer os.RemoveAll(dir1)
-			defer s1.Shutdown()
+			_, s1 := testServerWithConfig(t, conf)
 			testrpc.WaitForTestAgent(t, s1.RPC, "dc1")
+
+			_, policy, err := s1.fsm.State().ACLPolicyGetByID(nil, structs.ACLPolicyGlobalManagementID, nil)
+			require.NoError(t, err)
+			require.NotNil(t, policy)
 
 			if tt.initialManagement != "" {
 				_, initialManagement, err := s1.fsm.State().ACLTokenGetBySecret(nil, tt.initialManagement, nil)
@@ -1291,17 +1317,19 @@ func TestLeader_ACL_Initialization(t *testing.T) {
 				require.NotNil(t, initialManagement)
 			}
 
-			_, anon, err := s1.fsm.State().ACLTokenGetBySecret(nil, anonymousToken, nil)
-			require.NoError(t, err)
-			require.NotNil(t, anon)
+			if tt.hcpManagement != "" {
+				_, hcpManagement, err := s1.fsm.State().ACLTokenGetBySecret(nil, tt.hcpManagement, nil)
+				require.NoError(t, err)
+				require.NotNil(t, hcpManagement)
+			}
 
 			canBootstrap, _, err := s1.fsm.State().CanBootstrapACLToken()
 			require.NoError(t, err)
-			require.Equal(t, tt.bootstrap, canBootstrap)
+			require.Equal(t, tt.canBootstrap, canBootstrap)
 
-			_, policy, err := s1.fsm.State().ACLPolicyGetByID(nil, structs.ACLPolicyGlobalManagementID, nil)
+			_, anon, err := s1.fsm.State().ACLTokenGetBySecret(nil, anonymousToken, nil)
 			require.NoError(t, err)
-			require.NotNil(t, policy)
+			require.NotNil(t, anon)
 
 			serverToken, err := s1.getSystemMetadata(structs.ServerManagementTokenAccessorID)
 			require.NoError(t, err)
