@@ -21,6 +21,9 @@ func NewDeps(cfg config.CloudConfig, logger hclog.Logger) (d Deps, err error) {
 		return
 	}
 
+	// TODO: init HCP sink here and inject it into the telmetry lib package.
+	// For the purposes of hacking, I will be doing it directly in the lib/telemetry package.
+
 	d.Provider, err = scada.New(cfg, logger.Named("hcp.scada"))
 	return
 }
