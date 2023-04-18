@@ -31,7 +31,7 @@ func RunResourceService(t *testing.T) pbresource.ResourceServiceClient {
 	go backend.Run(ctx)
 
 	registry := resource.NewRegistry()
-	demo.Register(registry)
+	demo.RegisterTypes(registry)
 
 	server := grpc.NewServer()
 
