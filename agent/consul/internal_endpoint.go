@@ -741,6 +741,34 @@ func (m *Internal) PeeredUpstreams(args *structs.PartitionSpecificRequest, reply
 		})
 }
 
+func (m *Internal) AssignManualServiceVIPs(args *structs.AssignServiceManualVIPsRequest, reply *struct{}) error {
+	if done, err := m.srv.ForwardRPC("Internal.AssignManualServiceVIPs", args, reply); done {
+		return err
+	}
+
+	var authzCtx acl.AuthorizerContext
+	authz, err := m.srv.ResolveTokenAndDefaultMeta(args.Token, &args.EnterpriseMeta, &authzCtx)
+	if err != nil {
+		return err
+	}
+	if err := authz.ToAllowAuthorizer().ServiceWriteAllowed(args.Service, &authzCtx); err != nil {
+		return err
+	}
+
+	if err := m.srv.validateEnterpriseRequest(&args.EnterpriseMeta, true); err != nil {
+		return err
+	}
+
+	req := state.ServiceVirtualIP{
+		Service:   structs.PeeredServiceName{ServiceName: structs.ServiceNameFromString(args.Service)},
+		ManualIPs: args.ManualVIPs,
+	}
+
+	_, err = m.srv.raftApply(structs.UpdateVirtualIPRequestType, req)
+
+	return err
+}
+
 // EventFire is a bit of an odd endpoint, but it allows for a cross-DC RPC
 // call to fire an event. The primary use case is to enable user events being
 // triggered in a remote DC.

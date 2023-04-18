@@ -872,6 +872,13 @@ func (r *ChecksInStateRequest) RequestDatacenter() string {
 	return r.Datacenter
 }
 
+type AssignServiceManualVIPsRequest struct {
+	Service    string
+	ManualVIPs []string
+
+	DCSpecificRequest
+}
+
 // Used to return information about a node
 type Node struct {
 	ID              types.NodeID
