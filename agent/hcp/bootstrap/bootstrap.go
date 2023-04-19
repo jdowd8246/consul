@@ -13,6 +13,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -31,12 +32,12 @@ import (
 const (
 	subDir = "hcp-config"
 
-	caFileName              = "server-tls-cas.pem"
-	certFileName            = "server-tls-cert.pem"
-	configFileName          = "server-config.json"
-	existingClusterFileName = "existing-cluster"
-	keyFileName             = "server-tls-key.pem"
-	tokenFileName           = "hcp-management-token"
+	caFileName      = "server-tls-cas.pem"
+	certFileName    = "server-tls-cert.pem"
+	configFileName  = "server-config.json"
+	keyFileName     = "server-tls-key.pem"
+	tokenFileName   = "hcp-management-token"
+	successFileName = "success"
 )
 
 type ConfigLoader func(source config.Source) (config.LoadResult, error)
@@ -209,21 +210,10 @@ func fetchBootstrapConfig(ctx context.Context, client hcp.Client, dataDir string
 	}
 
 	devMode := dataDir == ""
-	existingCluster := bsCfg.ConsulConfig == ""
 
-	var (
-		cfgJSON string
-		err     error
-	)
-	if existingCluster {
-		if err := processDataForExistingCluster(dataDir, devMode, bsCfg.ManagementToken); err != nil {
-			return nil, fmt.Errorf("failed to persist config for existing cluster: %w", err)
-		}
-	} else {
-		cfgJSON, err = processDataForNewCluster(dataDir, devMode, bsCfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to persist config for existing cluster: %w", err)
-		}
+	cfgJSON, err := persistAndProcessConfig(dataDir, devMode, bsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to persist config for existing cluster: %w", err)
 	}
 
 	return &RawBootstrapConfig{
@@ -232,10 +222,9 @@ func fetchBootstrapConfig(ctx context.Context, client hcp.Client, dataDir string
 	}, nil
 }
 
-// processDataForNewCluster is called when we receive data corresponding to a new cluster.
-// Fresh clusters being boostrapped with config from HCP are secure by default and will
-// have TLS certs, gossip encryption, and other flags set.
-func processDataForNewCluster(dataDir string, devMode bool, bsCfg *hcp.BootstrapConfig) (string, error) {
+// persistAndProcessConfig is called when we receive data from CCM.
+// We persist everything that was received and also
+func persistAndProcessConfig(dataDir string, devMode bool, bsCfg *hcp.BootstrapConfig) (string, error) {
 	if devMode {
 		// Agent in dev mode, we still need somewhere to persist the certs
 		// temporarily though to be able to start up at all since we don't support
@@ -253,76 +242,69 @@ func processDataForNewCluster(dataDir string, devMode bool, bsCfg *hcp.Bootstrap
 		return "", fmt.Errorf("failed to ensure directory %q: %w", dir, err)
 	}
 
-	// Persist the TLS cert files from the response since we need to refer to them
-	// as disk files either way.
-	if err := persistTLSCerts(dataDir, bsCfg.TLSCert, bsCfg.TLSCertKey, bsCfg.TLSCAs); err != nil {
-		return "", fmt.Errorf("failed to persist TLS certificates to dir %q: %w", dataDir, err)
-	}
-
 	// Parse just to a map for now as we only have to inject to a specific place
 	// and parsing whole Config struct is complicated...
 	var cfg map[string]interface{}
 
-	if err := json.Unmarshal([]byte(bsCfg.ConsulConfig), &cfg); err != nil {
-		return "", fmt.Errorf("failed to unmarshal bootstrap config: %w", err)
+	if bsCfg.ConsulConfig != "" {
+		if err := json.Unmarshal([]byte(bsCfg.ConsulConfig), &cfg); err != nil {
+			return "", fmt.Errorf("failed to unmarshal bootstrap config: %w", err)
+		}
 	}
 
-	// Store paths to the persisted TLS cert files.
-	cfg["ca_file"] = filepath.Join(dataDir, subDir, caFileName)
-	cfg["cert_file"] = filepath.Join(dataDir, subDir, certFileName)
-	cfg["key_file"] = filepath.Join(dataDir, subDir, keyFileName)
+	var cfgJSON string
+	if bsCfg.TLSCert != "" {
+		if err := validateTLSCerts(bsCfg.TLSCert, bsCfg.TLSCertKey, bsCfg.TLSCAs); err != nil {
+			return "", fmt.Errorf("invalid certificates: %w", err)
+		}
 
-	// Convert the bootstrap config map back into a string
-	cfgJSONBytes, err := json.Marshal(cfg)
-	if err != nil {
-		return "", err
+		// Persist the TLS cert files from the response since we need to refer to them
+		// as disk files either way.
+		if err := persistTLSCerts(dir, bsCfg.TLSCert, bsCfg.TLSCertKey, bsCfg.TLSCAs); err != nil {
+			return "", fmt.Errorf("failed to persist TLS certificates to dir %q: %w", dataDir, err)
+		}
+
+		// Store paths to the persisted TLS cert files.
+		cfg["ca_file"] = filepath.Join(dir, caFileName)
+		cfg["cert_file"] = filepath.Join(dir, certFileName)
+		cfg["key_file"] = filepath.Join(dir, keyFileName)
+
+		// Convert the bootstrap config map back into a string
+		cfgJSONBytes, err := json.Marshal(cfg)
+		if err != nil {
+			return "", err
+		}
+		cfgJSON = string(cfgJSONBytes)
 	}
-	cfgJSON := string(cfgJSONBytes)
 
 	if !devMode {
 		// Persist the final config we need to add so that it is available locally after a restart.
 		// Assuming the configured data dir wasn't a tmp dir to start with.
-		if err := persistBootstrapConfig(dataDir, cfgJSON); err != nil {
-			return "", fmt.Errorf("failed to persist bootstrap config to dir %q: %w", dataDir, err)
+		if err := persistBootstrapConfig(dir, cfgJSON); err != nil {
+			return "", fmt.Errorf("failed to persist bootstrap config: %w", err)
 		}
-		if err := persistManagementToken(dataDir, bsCfg.ManagementToken); err != nil {
+
+		if err := validateManagementToken(bsCfg.ManagementToken); err != nil {
+			return "", fmt.Errorf("invalid management token: %w", err)
+		}
+		if err := persistManagementToken(dir, bsCfg.ManagementToken); err != nil {
 			return "", fmt.Errorf("failed to persist HCP management token: %w", err)
+		}
+
+		if err := persistSucessMarker(dir); err != nil {
+			return "", fmt.Errorf("failed to persist success marker: %w", err)
 		}
 	}
 	return cfgJSON, nil
 }
 
-// processDataForExistingCluster is called when we receive configuration for an existing
-// consul cluster that is now being linked to HCP's CCM.
-// To avoid overriding user-provided ACL/TLS settings HCP will only send back a management token
-// when existing clusters are linked. Therefore, we only need to persist the management token
-// and a marker indicating that this is an existing cluster.
-func processDataForExistingCluster(dataDir string, devMode bool, token string) error {
-	if devMode {
-		// Dev agents don't load data from disk after a restart. Nothing to do.
-		return nil
-	}
+func persistSucessMarker(dir string) error {
+	name := filepath.Join(dir, successFileName)
+	return os.WriteFile(name, []byte(""), 0600)
 
-	// Create subdir if it's not already there.
-	dir := filepath.Join(dataDir, subDir)
-	if err := lib.EnsurePath(dir, true); err != nil {
-		return fmt.Errorf("failed to ensure directory %q: %w", dir, err)
-	}
-
-	// By persisting a marker that this is an existing cluster we avoid attempting
-	// to load config/certs in the initial call to loadPersistedBootstrapConfig.
-	if err := persistExistingClusterMarker(dataDir); err != nil {
-		return fmt.Errorf("failed to persist marker for existing cluster: %w", err)
-	}
-	if err := persistManagementToken(dataDir, token); err != nil {
-		return fmt.Errorf("failed to persist HCP management token: %w", err)
-	}
-	return nil
 }
 
-func persistTLSCerts(dataDir string, serverCert, serverKey string, caCerts []string) error {
-	dir := filepath.Join(dataDir, subDir)
-
+func persistTLSCerts(dir string, serverCert, serverKey string, caCerts []string) error {
 	if serverCert == "" || serverKey == "" {
 		return fmt.Errorf("unexpected bootstrap response from HCP: missing TLS information")
 	}
@@ -356,23 +338,31 @@ func persistTLSCerts(dataDir string, serverCert, serverKey string, caCerts []str
 	return nil
 }
 
-func persistExistingClusterMarker(dataDir string) error {
-	name := filepath.Join(dataDir, subDir, existingClusterFileName)
-	return os.WriteFile(name, []byte(""), 0600)
-}
-
-func persistManagementToken(dataDir, token string) error {
+// Basic validation to ensure a UUID was loaded.
+func validateManagementToken(token string) error {
 	if token == "" {
 		return errors.New("missing HCP management token")
 	}
-	name := filepath.Join(dataDir, subDir, tokenFileName)
+
+	if _, err := uuid.ParseUUID(token); err != nil {
+		return errors.New("management token is not a valid UUID")
+	}
+	return nil
+}
+
+func persistManagementToken(dir, token string) error {
+	name := filepath.Join(dir, tokenFileName)
 	return os.WriteFile(name, []byte(token), 0600)
 }
 
-func persistBootstrapConfig(dataDir, cfgJSON string) error {
+func persistBootstrapConfig(dir, cfgJSON string) error {
+	if cfgJSON == "" {
+		return nil
+	}
+
 	// Persist the important bits we got from bootstrapping. The TLS certs are
 	// already persisted, just need to persist the config we are going to add.
-	name := filepath.Join(dataDir, subDir, configFileName)
+	name := filepath.Join(dir, configFileName)
 	return os.WriteFile(name, []byte(cfgJSON), 0600)
 }
 
@@ -382,63 +372,30 @@ func loadPersistedBootstrapConfig(dataDir string, ui UI) (*RawBootstrapConfig, b
 		return nil, false
 	}
 
-	existingCluster := true
-	expectedFiles := []string{
-		filepath.Join(dataDir, subDir, tokenFileName),
-	}
+	dir := filepath.Join(dataDir, subDir)
 
-	_, err := os.Stat(filepath.Join(dataDir, subDir, existingClusterFileName))
+	_, err := os.Stat(filepath.Join(dir, successFileName))
 	if os.IsNotExist(err) {
-		expectedFiles = append(expectedFiles,
-			filepath.Join(dataDir, subDir, configFileName),
-			filepath.Join(dataDir, subDir, caFileName),
-			filepath.Join(dataDir, subDir, certFileName),
-			filepath.Join(dataDir, subDir, keyFileName),
-		)
-
-		existingCluster = false
+		// Haven't bootstrapped from HCP.
+		return nil, false
 	}
-
-	// Check whether none, some, or all expected files are present.
-	var seen int
-	for _, name := range expectedFiles {
-		if _, err := os.Stat(name); err == nil {
-			seen++
-		}
-	}
-
-	// No files available locally; this may be the first fetch.
-	//
-	// Note that we don't return here if seen is 0 and existingCluster is true
-	// because that implies we at least read the existing cluster file marker,
-	// indicating that there is incomplete data.
-	if seen == 0 && !existingCluster {
+	if err != nil {
+		ui.Warn("failed to check for config on disk, re-fetching from HCP: " + err.Error())
 		return nil, false
 	}
 
-	// At least one required files doesn't exist if the local file count is incomplete.
-	if seen < len(expectedFiles) {
-		ui.Warn("configuration files on disk are incomplete, re-fetching from HCP")
+	if err := checkCerts(dir); err != nil {
+		ui.Warn("failed to validate certs on disk, re-fetching from HCP: " + err.Error())
 		return nil, false
 	}
 
-	var configJSON string
-
-	// Only new clusters bootstrapped with HCP configuration would have stored certs and JSON config.
-	if !existingCluster {
-		if err := validateCerts(filepath.Join(dataDir, subDir)); err != nil {
-			ui.Warn("failed to load TLS certificates from disk, re-fetching from HCP: " + err.Error())
-			return nil, false
-		}
-
-		configJSON, err = loadBootstrapConfigJSON(dataDir)
-		if err != nil {
-			ui.Warn("failed to load bootstrap config from disk, re-fetching from HCP: " + err.Error())
-			return nil, false
-		}
+	configJSON, err := loadBootstrapConfigJSON(dataDir)
+	if err != nil {
+		ui.Warn("failed to load bootstrap config from disk, re-fetching from HCP: " + err.Error())
+		return nil, false
 	}
 
-	mgmtToken, err := loadManagementToken(dataDir)
+	mgmtToken, err := loadManagementToken(dir)
 	if err != nil {
 		ui.Warn("failed to load HCP management token from disk, re-fetching from HCP: " + err.Error())
 		return nil, false
@@ -453,9 +410,17 @@ func loadPersistedBootstrapConfig(dataDir string, ui UI) (*RawBootstrapConfig, b
 func loadBootstrapConfigJSON(dataDir string) (string, error) {
 	filename := filepath.Join(dataDir, subDir, configFileName)
 
+	_, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to check for bootstrap config: %w", err)
+	}
+
 	// Attempt to load persisted config to check for errors and basic validity.
 	// Errors here will raise issues like referencing unsupported config fields.
-	_, err := config.Load(config.LoadOpts{
+	_, err = config.Load(config.LoadOpts{
 		ConfigFiles: []string{filename},
 		HCL: []string{
 			"server = true",
@@ -475,44 +440,129 @@ func loadBootstrapConfigJSON(dataDir string) (string, error) {
 	return strings.TrimSpace(string(jsonBs)), nil
 }
 
-func loadManagementToken(dataDir string) (string, error) {
-	name := filepath.Join(dataDir, subDir, tokenFileName)
+func loadManagementToken(dir string) (string, error) {
+	name := filepath.Join(dir, tokenFileName)
 	bytes, err := os.ReadFile(name)
+	if os.IsNotExist(err) {
+		return "", errors.New("configuration files on disk are incomplete, missing: " + name)
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to read: %w", err)
 	}
 
-	// Basic validation to ensure a UUID was loaded.
 	token := string(bytes)
-	if _, err = uuid.ParseUUID(token); err != nil {
-		return "", errors.New("stored token is not a valid UUID")
+	if err := validateManagementToken(token); err != nil {
+		return "", fmt.Errorf("invalid management token: %w", err)
 	}
+
 	return token, nil
 }
 
-// validateCerts checks that the CA cert, server cert, and key on disk are structurally valid.
+func checkCerts(dir string) error {
+	files := []string{
+		filepath.Join(dir, caFileName),
+		filepath.Join(dir, certFileName),
+		filepath.Join(dir, keyFileName),
+	}
+
+	missing := make([]string, 0)
+	for _, file := range files {
+		_, err := os.Stat(file)
+		if os.IsNotExist(err) {
+			missing = append(missing, file)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if len(missing) == len(files) {
+		return nil
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("configuration files on disk are incomplete, missing: %v", missing)
+	}
+
+	cert, key, caCerts, err := loadCerts(dir)
+	if err != nil {
+		return fmt.Errorf("failed to load certs from disk: %w", err)
+	}
+
+	if err = validateTLSCerts(cert, key, caCerts); err != nil {
+		return fmt.Errorf("invalid certs on disk: %w", err)
+	}
+	return nil
+}
+
+func loadCerts(dir string) (cert, key string, caCerts []string, err error) {
+	certPEMBlock, err := os.ReadFile(filepath.Join(dir, certFileName))
+	if err != nil {
+		return "", "", nil, err
+	}
+	keyPEMBlock, err := os.ReadFile(filepath.Join(dir, keyFileName))
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	caPEMs, err := os.ReadFile(filepath.Join(dir, caFileName))
+	if err != nil {
+		return "", "", nil, err
+	}
+	caCerts, err = splitCACerts(caPEMs)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("failed to parse CA certs: %w", err)
+	}
+
+	return string(certPEMBlock), string(keyPEMBlock), caCerts, nil
+}
+
+// splitCACerts takes a list of concatenated PEM blocks and splits
+// them back up into strings. This is used because CACerts are written
+// into a single file, but validated individually.
+func splitCACerts(caPEMs []byte) ([]string, error) {
+	var out []string
+
+	for {
+		nextBlock, remaining := pem.Decode(caPEMs)
+		if nextBlock == nil {
+			break
+		}
+		if nextBlock.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("PEM-block should be CERTIFICATE type")
+		}
+
+		// Collect up to the start of the remaining bytes.
+		// We don't grab nextBlock.Bytes because it's not PEM encoded.
+		out = append(out, string(caPEMs[:len(caPEMs)-len(remaining)]))
+		caPEMs = remaining
+	}
+
+	if len(out) == 0 {
+		return nil, errors.New("invalid CA certificate")
+	}
+	return out, nil
+}
+
+// validateTLSCerts checks that the CA cert, server cert, and key on disk are structurally valid.
 //
 // OPTIMIZE: This could be improved by returning an error if certs are expired or close to expiration.
 // However, that requires issuing new certs on bootstrap requests, since returning an error
 // would trigger a re-fetch from HCP.
-func validateCerts(path string) error {
-	cert, err := tls.LoadX509KeyPair(filepath.Join(path, certFileName), filepath.Join(path, keyFileName))
+func validateTLSCerts(cert, key string, caCerts []string) error {
+	leaf, err := tls.X509KeyPair([]byte(cert), []byte(key))
 	if err != nil {
 		return errors.New("invalid server certificate or key")
 	}
-	_, err = x509.ParseCertificate(cert.Certificate[0])
+	_, err = x509.ParseCertificate(leaf.Certificate[0])
 	if err != nil {
 		return errors.New("invalid server certificate")
 	}
 
-	caPEMBlock, err := os.ReadFile(filepath.Join(path, caFileName))
-	if err != nil {
-		return err
+	for _, caCert := range caCerts {
+		_, err = connect.ParseCert(caCert)
+		if err != nil {
+			return errors.New("invalid CA certificate")
+		}
 	}
-	_, err = connect.ParseCert(string(caPEMBlock))
-	if err != nil {
-		return errors.New("invalid CA certificate")
-	}
-
 	return nil
 }
