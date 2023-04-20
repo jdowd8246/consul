@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
@@ -204,6 +205,28 @@ func GenerateV2Artist() (*pbresource.Resource, error) {
 // GenerateV2Album generates a random Album resource, owned by the Artist with
 // the given ID.
 func GenerateV2Album(artistID *pbresource.ID) (*pbresource.Resource, error) {
+	return generateV2Album(artistID, rand.New(rand.NewSource(time.Now().UnixNano())))
+}
+
+func generateV2AlbumsDeterministic(artistID *pbresource.ID, count int) ([]*pbresource.Resource, error) {
+	uid, err := ulid.Parse(artistID.Uid)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Uid: %w", err)
+	}
+	rand := rand.New(rand.NewSource(int64(uid.Time())))
+
+	albums := make([]*pbresource.Resource, count)
+	for i := 0; i < count; i++ {
+		album, err := generateV2Album(artistID, rand)
+		if err != nil {
+			return nil, err
+		}
+		albums[i] = album
+	}
+	return albums, nil
+}
+
+func generateV2Album(artistID *pbresource.ID, rand *rand.Rand) (*pbresource.Resource, error) {
 	adjective := adjectives[rand.Intn(len(adjectives))]
 	noun := nouns[rand.Intn(len(nouns))]
 
