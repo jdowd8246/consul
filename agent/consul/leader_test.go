@@ -1315,12 +1315,14 @@ func TestLeader_ACL_Initialization(t *testing.T) {
 				_, initialManagement, err := s1.fsm.State().ACLTokenGetBySecret(nil, tt.initialManagement, nil)
 				require.NoError(t, err)
 				require.NotNil(t, initialManagement)
+				require.Equal(t, tt.initialManagement, initialManagement.SecretID)
 			}
 
 			if tt.hcpManagement != "" {
 				_, hcpManagement, err := s1.fsm.State().ACLTokenGetBySecret(nil, tt.hcpManagement, nil)
 				require.NoError(t, err)
 				require.NotNil(t, hcpManagement)
+				require.Equal(t, tt.hcpManagement, hcpManagement.SecretID)
 			}
 
 			canBootstrap, _, err := s1.fsm.State().CanBootstrapACLToken()

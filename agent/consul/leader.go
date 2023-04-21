@@ -450,7 +450,7 @@ func (s *Server) initializeACLs(ctx context.Context) error {
 			}
 		}
 
-		// Check for configured management token from HCP
+		// Check for configured management token from HCP. It MUST NOT override the user-provided initial management token.
 		if hcpManagement := s.config.Cloud.ManagementToken; len(hcpManagement) > 0 {
 			err := s.initializeManagementToken("HCP Management Token", hcpManagement)
 			if err != nil {

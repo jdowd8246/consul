@@ -2527,8 +2527,10 @@ func validateAutoConfigAuthorizer(rt RuntimeConfig) error {
 	return nil
 }
 
-func (b *builder) cloudConfigVal(v *CloudConfigRaw) (val hcpconfig.CloudConfig) {
-	val.ResourceID = os.Getenv("HCP_RESOURCE_ID")
+func (b *builder) cloudConfigVal(v *CloudConfigRaw) hcpconfig.CloudConfig {
+	val := hcpconfig.CloudConfig{
+		ResourceID: os.Getenv("HCP_RESOURCE_ID"),
+	}
 	if v == nil {
 		return val
 	}
