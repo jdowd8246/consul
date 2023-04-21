@@ -157,7 +157,8 @@ func generateClusterData(cluster resource.Resource) (gnmmod.HashicorpCloudGlobal
 		"tokens": map[string]interface{}{
 			// Also setup the server's own agent token to be the management token so it has
 			// permission to register itself.
-			"agent": token,
+			"agent":              token,
+			"initial_management": token,
 		},
 		"default_policy":           "deny",
 		"enabled":                  true,

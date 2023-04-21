@@ -173,6 +173,9 @@ func TestLoadConfig_Persistence(t *testing.T) {
 		// Run case-specific verification.
 		tc.verifyFn(t, fromRemote.RuntimeConfig)
 
+		require.Empty(t, fromRemote.RuntimeConfig.ACLInitialManagementToken,
+			"initial_management token should have been sanitized")
+
 		if tc.devMode {
 			// Re-running the bootstrap func below isn't relevant to dev mode
 			// since they don't have a data directory to load data from.

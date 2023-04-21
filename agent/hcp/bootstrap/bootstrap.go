@@ -244,11 +244,26 @@ func persistAndProcessConfig(dataDir string, devMode bool, bsCfg *hcp.BootstrapC
 
 	// Parse just to a map for now as we only have to inject to a specific place
 	// and parsing whole Config struct is complicated...
-	var cfg map[string]interface{}
+	var cfg map[string]any
 
 	if bsCfg.ConsulConfig != "" {
 		if err := json.Unmarshal([]byte(bsCfg.ConsulConfig), &cfg); err != nil {
 			return "", fmt.Errorf("failed to unmarshal bootstrap config: %w", err)
+		}
+
+		// Avoid ever setting an initial_management token from HCP now that we can
+		// separately bootstrap an HCP management token with a distinct accessor ID.
+		//
+		// CCM will continue to return an initial_management token because previous versions of Consul
+		// cannot bootstrap an HCP management token distinct from the initial management token.
+		// This block can be deleted once CCM supports tailoring bootstrap config responses
+		// based on the version of Consul that requested it.
+		acls, aclsOK := cfg["acl"].(map[string]any)
+		if aclsOK {
+			tokens, tokensOK := acls["tokens"].(map[string]interface{})
+			if tokensOK {
+				delete(tokens, "initial_management")
+			}
 		}
 	}
 
