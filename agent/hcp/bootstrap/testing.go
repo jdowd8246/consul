@@ -83,7 +83,7 @@ func generateClusterData(cluster resource.Resource) (gnmmod.HashicorpCloudGlobal
 		if err != nil {
 			return resp, err
 		}
-		resp.Bootstrap.ConsulConfig = ""
+		resp.Bootstrap.ConsulConfig = "{}"
 		resp.Bootstrap.ManagementToken = token
 		return resp, nil
 	}

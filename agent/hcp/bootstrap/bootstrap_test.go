@@ -276,11 +276,12 @@ func TestLoadConfig_Persistence(t *testing.T) {
 
 				entries, err := os.ReadDir(dir)
 				require.NoError(t, err)
-				require.Len(t, entries, 2)
+				require.Len(t, entries, 3)
 
 				files := []string{
 					filepath.Join(dir, tokenFileName),
 					filepath.Join(dir, successFileName),
+					filepath.Join(dir, configFileName),
 				}
 				for _, name := range files {
 					_, err := os.Stat(name)

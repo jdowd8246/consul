@@ -37,7 +37,7 @@ const (
 	configFileName  = "server-config.json"
 	keyFileName     = "server-tls-key.pem"
 	tokenFileName   = "hcp-management-token"
-	successFileName = "success"
+	successFileName = "successful-bootstrap"
 )
 
 type ConfigLoader func(source config.Source) (config.LoadResult, error)
@@ -223,7 +223,8 @@ func fetchBootstrapConfig(ctx context.Context, client hcp.Client, dataDir string
 }
 
 // persistAndProcessConfig is called when we receive data from CCM.
-// We persist everything that was received and also
+// We validate and persist everything that was received, then also update
+// the JSON config as needed.
 func persistAndProcessConfig(dataDir string, devMode bool, bsCfg *hcp.BootstrapConfig) (string, error) {
 	if devMode {
 		// Agent in dev mode, we still need somewhere to persist the certs
@@ -246,24 +247,22 @@ func persistAndProcessConfig(dataDir string, devMode bool, bsCfg *hcp.BootstrapC
 	// and parsing whole Config struct is complicated...
 	var cfg map[string]any
 
-	if bsCfg.ConsulConfig != "" {
-		if err := json.Unmarshal([]byte(bsCfg.ConsulConfig), &cfg); err != nil {
-			return "", fmt.Errorf("failed to unmarshal bootstrap config: %w", err)
-		}
+	if err := json.Unmarshal([]byte(bsCfg.ConsulConfig), &cfg); err != nil {
+		return "", fmt.Errorf("failed to unmarshal bootstrap config: %w", err)
+	}
 
-		// Avoid ever setting an initial_management token from HCP now that we can
-		// separately bootstrap an HCP management token with a distinct accessor ID.
-		//
-		// CCM will continue to return an initial_management token because previous versions of Consul
-		// cannot bootstrap an HCP management token distinct from the initial management token.
-		// This block can be deleted once CCM supports tailoring bootstrap config responses
-		// based on the version of Consul that requested it.
-		acls, aclsOK := cfg["acl"].(map[string]any)
-		if aclsOK {
-			tokens, tokensOK := acls["tokens"].(map[string]interface{})
-			if tokensOK {
-				delete(tokens, "initial_management")
-			}
+	// Avoid ever setting an initial_management token from HCP now that we can
+	// separately bootstrap an HCP management token with a distinct accessor ID.
+	//
+	// CCM will continue to return an initial_management token because previous versions of Consul
+	// cannot bootstrap an HCP management token distinct from the initial management token.
+	// This block can be deleted once CCM supports tailoring bootstrap config responses
+	// based on the version of Consul that requested it.
+	acls, aclsOK := cfg["acl"].(map[string]any)
+	if aclsOK {
+		tokens, tokensOK := acls["tokens"].(map[string]interface{})
+		if tokensOK {
+			delete(tokens, "initial_management")
 		}
 	}
 
@@ -371,10 +370,6 @@ func persistManagementToken(dir, token string) error {
 }
 
 func persistBootstrapConfig(dir, cfgJSON string) error {
-	if cfgJSON == "" {
-		return nil
-	}
-
 	// Persist the important bits we got from bootstrapping. The TLS certs are
 	// already persisted, just need to persist the config we are going to add.
 	name := filepath.Join(dir, configFileName)
@@ -491,9 +486,14 @@ func checkCerts(dir string) error {
 			return err
 		}
 	}
+
+	// If all the TLS files are missing, assume this is intentional.
+	// Existing clusters do not receive any TLS certs.
 	if len(missing) == len(files) {
 		return nil
 	}
+
+	// If only some of the files are missing, something went wrong.
 	if len(missing) > 0 {
 		return fmt.Errorf("configuration files on disk are incomplete, missing: %v", missing)
 	}
